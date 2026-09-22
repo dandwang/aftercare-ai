@@ -9,12 +9,14 @@ AfterCare AI 是一个面向中小电商商家的多租户 AI 客服与工单系
 
 ## 当前状态
 
-当前处于 **M0：项目定义**。
+当前处于 **M1：可运行骨架**。
 
 - 已定义用户、业务目标、范围和非范围。
 - 已定义第一版需求与验收案例。
 - 已记录初始架构和关键技术决策。
-- 尚未创建业务代码或安装依赖。
+- M0 项目定义已经提交到本地 `main`。
+- M1 骨架已在 `feat/m1-runnable-skeleton` 分支实现并通过本地验证。
+- M1 改动暂未提交，等待学习复盘和人工检查。
 
 ## 核心业务链路
 
@@ -52,3 +54,45 @@ AfterCare AI 是一个面向中小电商商家的多租户 AI 客服与工单系
 
 具体依赖版本将在创建可运行骨架时确定并锁定。
 
+## M1 本地验证
+
+### 使用 Docker Compose
+
+```powershell
+Copy-Item .env.example .env
+docker compose up --build -d
+docker compose ps
+```
+
+启动后访问：
+
+- Web 状态页：<http://localhost:5173>
+- API 存活检查：<http://localhost:8000/health/live>
+- API 就绪检查：<http://localhost:8000/health/ready>
+- API 文档：<http://localhost:8000/docs>
+
+停止服务但保留本地数据：
+
+```powershell
+docker compose down
+```
+
+不要在普通停止操作中添加 `--volumes`，否则会删除本地数据库、Redis 和 Qdrant 数据卷。
+
+### 分别验证 API 与 Web
+
+```powershell
+Set-Location apps/api
+uv sync
+uv run ruff check .
+uv run pytest
+
+Set-Location ../web
+pnpm install
+pnpm typecheck
+pnpm build
+```
+
+API 的 `/health/live` 只表示进程存活；`/health/ready` 会实际检查 PostgreSQL、Redis 和 Qdrant，因此在基础服务没有启动时返回 `503` 是正确行为。
+
+PostgreSQL、Redis 和 Qdrant 默认只暴露在 Compose 内部网络，不占用宿主机端口。需要排障时应优先通过 API 就绪检查或 `docker compose exec` 访问，而不是公开数据服务端口。

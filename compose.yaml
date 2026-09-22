@@ -1,0 +1,89 @@
+name: aftercare-ai
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aftercare}
+      POSTGRES_USER: ${POSTGRES_USER:-aftercare}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aftercare}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      AFTERCARE_ENVIRONMENT: ${AFTERCARE_ENVIRONMENT:-local}
+      AFTERCARE_DATABASE_URL: ${AFTERCARE_DATABASE_URL:-postgresql://aftercare:aftercare@postgres:5432/aftercare}
+      AFTERCARE_REDIS_URL: ${AFTERCARE_REDIS_URL:-redis://redis:6379/0}
+      AFTERCARE_QDRANT_URL: ${AFTERCARE_QDRANT_URL:-http://qdrant:6333}
+      AFTERCARE_CORS_ORIGINS: ${AFTERCARE_CORS_ORIGINS:-http://localhost:5173}
+      AFTERCARE_HEALTH_TIMEOUT_SECONDS: ${AFTERCARE_HEALTH_TIMEOUT_SECONDS:-2.0}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:

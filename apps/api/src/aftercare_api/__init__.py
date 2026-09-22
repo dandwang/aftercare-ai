@@ -1,0 +1,2 @@
+"""AfterCare AI API package."""
+
