@@ -129,6 +129,24 @@
 
 **下次怎样更好地描述任务**：新建任务时直接要求先读取 `AGENTS.md`、`docs/STATUS.md` 和当前里程碑文档，再只读分析目标任务。
 
+## M2-A：租户管理员注册、登录与当前用户接口
+
+**业务目标**：新商家能够创建首个管理员账号、使用密码登录，并通过受保护接口读取由服务器确认的用户、租户和角色。
+
+**我批准的范围**：在 API 中引入 SQLAlchemy、Alembic、Argon2 和 JWT；实现 tenant、user、tenant membership、注册、登录、当前用户接口和相关测试；不实现前端登录、刷新令牌、成员管理或对话功能。
+
+**数据流**：注册请求在一个数据库事务中创建 tenant、user 和 merchant_admin membership；登录以 Argon2 校验密码后签发带过期时间的 JWT；`/me` 先验证 JWT 签名和过期时间，再从数据库重新检查 user、tenant 和 membership 的启用状态。
+
+**关键决定与理由**：JWT 仅用于定位 user，不将 tenant 或 role 作为持续可信的授权来源。每个受保护请求都回查数据库，因此停用 user、membership 或 tenant 后，已签发但未过期的 token 也会失效。数据库结构只通过 Alembic 管理，API 容器启动时会执行 `alembic upgrade head`。
+
+**验证证据**：`uv run ruff check .` 通过；`uv run pytest` 通过 10 个测试；Web 类型检查和生产构建通过。Docker Compose 在独立项目与数据卷中成功构建并启动，live/ready 均返回 200。真实 PostgreSQL 完成 `upgrade → downgrade → upgrade` 并回到 `20260922_01`；容器验证了注册 201、登录 200、`/me` 200、错误密码 401，以及停用 membership 后原 access token 的 `/me` 为 401。
+
+**失败路径**：重复注册返回 409 且事务不保留部分数据；错误密码、畸形/过期 token、停用 user/membership/tenant 均返回 401。
+
+**仍不理解或未验证的内容**：生产密钥轮换、刷新令牌和主动撤销列表不在 M2-A 范围内；CI 尚未自动运行本次验证。
+
+**下次怎样更好地描述任务**：把本机 Docker 可用性作为实现前检查项；这能在写完迁移前尽早识别真实 PostgreSQL 验证环境是否具备。
+
 ## 后续记录模板
 
 ### 日期 / 里程碑 / 任务
