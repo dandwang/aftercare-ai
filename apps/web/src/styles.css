@@ -37,6 +37,22 @@ button:disabled {
   opacity: 0.6;
 }
 
+input {
+  width: 100%;
+  margin-top: 0.45rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.65rem;
+  background: white;
+  color: inherit;
+  font: inherit;
+}
+
+input:focus {
+  outline: 3px solid rgba(49, 84, 215, 0.2);
+  border-color: #3154d7;
+}
+
 .shell {
   width: min(920px, calc(100% - 2rem));
   margin: 0 auto;
@@ -45,6 +61,55 @@ button:disabled {
 
 .hero {
   margin-bottom: 2rem;
+}
+
+.top-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.secondary-button {
+  color: #3154d7;
+  background: #e8edff;
+}
+
+.signed-in-as {
+  margin: 0.8rem 0 0;
+  color: #596780;
+}
+
+.auth-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 1rem;
+}
+
+.auth-card {
+  width: min(440px, 100%);
+  padding: 2rem;
+  border: 1px solid #e2e8f2;
+  border-radius: 1.1rem;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 1.2rem 3rem rgba(30, 48, 83, 0.08);
+}
+
+.login-form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.75rem;
+}
+
+.login-form label {
+  color: #334155;
+  font-weight: 650;
+}
+
+.form-error {
+  margin: 0;
+  color: #c0342d;
 }
 
 .eyebrow,
@@ -139,5 +204,8 @@ h1 {
     align-items: flex-start;
     flex-direction: column;
   }
-}
 
+  .top-row {
+    flex-direction: column;
+  }
+}
