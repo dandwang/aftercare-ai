@@ -9,14 +9,14 @@ AfterCare AI 是一个面向中小电商商家的多租户 AI 客服与工单系
 
 ## 当前状态
 
-当前处于 **M1：可运行骨架**。
+当前处于 **M2：身份与对话** 的规划阶段，下一项任务是 **M2-A：租户管理员注册、登录与当前用户接口**。
 
 - 已定义用户、业务目标、范围和非范围。
 - 已定义第一版需求与验收案例。
 - 已记录初始架构和关键技术决策。
-- M0 项目定义已经提交到本地 `main`。
-- M1 骨架已在 `feat/m1-runnable-skeleton` 分支实现并通过本地验证。
-- M1 改动暂未提交，等待学习复盘和人工检查。
+- M0 项目定义已完成并提交。
+- M1 可运行骨架已完成、本地验证通过，并提交和推送到远程 `main`。
+- M2 尚未开始编写业务代码；具体范围与交付顺序见 M2 里程碑文档。
 
 ## 核心业务链路
 
@@ -26,12 +26,14 @@ AfterCare AI 是一个面向中小电商商家的多租户 AI 客服与工单系
 
 ## 文档阅读顺序
 
-1. [项目简报](docs/PROJECT_BRIEF.md)
-2. [第一版需求](docs/REQUIREMENTS.md)
-3. [验收案例](docs/ACCEPTANCE_CASES.md)
-4. [初始架构](docs/ARCHITECTURE.md)
-5. [架构决策](docs/DECISIONS.md)
-6. [学习日志](docs/LEARNING_LOG.md)
+1. [当前状态与交接](docs/STATUS.md)
+2. [项目简报](docs/PROJECT_BRIEF.md)
+3. [第一版需求](docs/REQUIREMENTS.md)
+4. [验收案例](docs/ACCEPTANCE_CASES.md)
+5. [初始架构](docs/ARCHITECTURE.md)
+6. [架构决策](docs/DECISIONS.md)
+7. [M2 身份与对话里程碑](docs/milestones/M2.md)
+8. [学习日志](docs/LEARNING_LOG.md)
 
 ## 交付原则
 
@@ -52,7 +54,7 @@ AfterCare AI 是一个面向中小电商商家的多租户 AI 客服与工单系
 - 对象存储：本地 MinIO，生产环境使用 S3 兼容存储
 - 交付：Docker Compose、GitHub Actions、Linux、HTTPS
 
-具体依赖版本将在创建可运行骨架时确定并锁定。
+运行时依赖的精确版本由 `uv.lock` 和 `pnpm-lock.yaml` 锁定；基础镜像版本记录在对应 Dockerfile 与 Compose 配置中。
 
 ## M1 本地验证
 
