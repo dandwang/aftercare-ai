@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from aftercare_api.config import get_settings
+from aftercare_api.conversations.router import router as conversations_router
 from aftercare_api.health import router as health_router
 from aftercare_api.identity.router import router as identity_router
 
@@ -23,3 +24,4 @@ app.add_middleware(
 )
 app.include_router(health_router)
 app.include_router(identity_router)
+app.include_router(conversations_router)

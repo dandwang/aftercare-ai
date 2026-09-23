@@ -41,6 +41,19 @@ async function requestCurrentUser(token: string): Promise<CurrentUser | null> {
   }
 }
 
+export async function authenticatedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  if (!accessToken.value) throw new Error('INVALID_SESSION')
+
+  const headers = new Headers(init.headers)
+  headers.set('Authorization', `Bearer ${accessToken.value}`)
+  const response = await fetch(`${apiBaseUrl}${path}`, { ...init, headers })
+  if (response.status === 401) {
+    clearSession()
+    status.value = 'anonymous'
+  }
+  return response
+}
+
 async function loadCurrentUser(): Promise<boolean> {
   if (!accessToken.value) {
     clearSession()

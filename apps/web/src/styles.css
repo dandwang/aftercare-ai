@@ -53,6 +53,22 @@ input:focus {
   border-color: #3154d7;
 }
 
+textarea {
+  width: 100%;
+  min-height: 5rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.65rem;
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+
+textarea:focus {
+  outline: 3px solid rgba(49, 84, 215, 0.2);
+  border-color: #3154d7;
+}
+
 .shell {
   width: min(920px, calc(100% - 2rem));
   margin: 0 auto;
@@ -195,6 +211,97 @@ h1 {
   font-size: 0.85rem;
 }
 
+.chat-layout {
+  display: grid;
+  grid-template-columns: minmax(200px, 0.7fr) minmax(0, 2fr);
+  overflow: hidden;
+  border: 1px solid #e2e8f2;
+  border-radius: 1.1rem;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1.2rem 3rem rgba(30, 48, 83, 0.08);
+}
+
+.conversation-list,
+.message-panel {
+  min-height: 28rem;
+  padding: 1.25rem;
+}
+
+.conversation-list {
+  display: grid;
+  align-content: start;
+  gap: 0.65rem;
+  border-right: 1px solid #e2e8f2;
+}
+
+.conversation-list h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.conversation-button {
+  color: #334155;
+  background: #f6f8fc;
+  text-align: left;
+  font-weight: 500;
+}
+
+.conversation-button.selected {
+  color: #fff;
+  background: #3154d7;
+}
+
+.message-panel {
+  display: grid;
+}
+
+.message-panel > :only-child {
+  align-self: center;
+}
+
+.message-list {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+  overflow: auto;
+}
+
+.message {
+  max-width: 85%;
+  padding: 0.85rem 1rem;
+  border-radius: 0.8rem;
+  background: #f1f5f9;
+}
+
+.message.assistant {
+  background: #e8edff;
+}
+
+.message strong {
+  color: #596780;
+  font-size: 0.82rem;
+}
+
+.message p {
+  margin: 0.35rem 0 0;
+  white-space: pre-wrap;
+}
+
+.message-form {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.message-form label,
+.muted {
+  color: #596780;
+}
+
+.muted {
+  margin: 0;
+}
+
 @media (max-width: 560px) {
   .shell {
     padding-top: 2.5rem;
@@ -207,5 +314,15 @@ h1 {
 
   .top-row {
     flex-direction: column;
+  }
+
+  .chat-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .conversation-list {
+    min-height: auto;
+    border-right: 0;
+    border-bottom: 1px solid #e2e8f2;
   }
 }

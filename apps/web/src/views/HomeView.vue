@@ -1,60 +1,85 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import {
+  createConversation,
+  getConversation,
+  listConversations,
+  sendMessage,
+  type Conversation,
+  type ConversationDetail,
+} from '../conversations'
 import { useAuth } from '../auth'
 
-type HealthState = 'checking' | 'healthy' | 'unhealthy'
-
-interface ServiceStatus {
-  status: 'healthy' | 'unhealthy'
-}
-
-interface ReadinessResponse {
-  status: 'ready' | 'not_ready'
-  services: Record<string, ServiceStatus>
-}
-
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
 const router = useRouter()
 const { currentUser, logout } = useAuth()
-const apiState = ref<HealthState>('checking')
-const readinessState = ref<HealthState>('checking')
-const services = ref<Record<string, ServiceStatus>>({})
-const lastCheckedAt = ref<Date | null>(null)
+const conversations = ref<Conversation[]>([])
+const selectedConversation = ref<ConversationDetail | null>(null)
+const draft = ref('')
+const isLoading = ref(true)
+const isSending = ref(false)
+const errorMessage = ref('')
 
-const systemState = computed<HealthState>(() => {
-  if (apiState.value === 'checking' || readinessState.value === 'checking') return 'checking'
-  if (apiState.value === 'unhealthy' || readinessState.value === 'unhealthy') return 'unhealthy'
-  return 'healthy'
-})
+function showConversationLabel(conversation: Conversation): string {
+  return `会话 · ${new Date(conversation.updated_at).toLocaleString('zh-CN')}`
+}
 
-const statusLabel = computed(() => {
-  if (systemState.value === 'checking') return '检查中'
-  return systemState.value === 'healthy' ? '就绪' : '未就绪'
-})
+async function loadConversation(conversationId: string): Promise<void> {
+  selectedConversation.value = await getConversation(conversationId)
+}
 
-async function refreshHealth(): Promise<void> {
-  apiState.value = 'checking'
-  readinessState.value = 'checking'
-  services.value = {}
+async function refreshConversations(selectNewest = true): Promise<void> {
+  conversations.value = await listConversations()
+  if (selectNewest && conversations.value[0]) await loadConversation(conversations.value[0].id)
+}
 
+async function initialize(): Promise<void> {
+  isLoading.value = true
+  errorMessage.value = ''
   try {
-    const response = await fetch(`${apiBaseUrl}/health/live`)
-    apiState.value = response.ok ? 'healthy' : 'unhealthy'
+    await refreshConversations()
   } catch {
-    apiState.value = 'unhealthy'
-  }
-
-  try {
-    const response = await fetch(`${apiBaseUrl}/health/ready`)
-    const body = (await response.json()) as ReadinessResponse
-    services.value = body.services ?? {}
-    readinessState.value = response.ok && body.status === 'ready' ? 'healthy' : 'unhealthy'
-  } catch {
-    readinessState.value = 'unhealthy'
+    errorMessage.value = '无法读取会话，请确认登录状态和服务连接。'
   } finally {
-    lastCheckedAt.value = new Date()
+    isLoading.value = false
+  }
+}
+
+async function startConversation(): Promise<void> {
+  errorMessage.value = ''
+  try {
+    const conversation = await createConversation()
+    await refreshConversations(false)
+    await loadConversation(conversation.id)
+  } catch {
+    errorMessage.value = '无法创建会话，请稍后重试。'
+  }
+}
+
+async function selectConversation(conversationId: string): Promise<void> {
+  errorMessage.value = ''
+  try {
+    await loadConversation(conversationId)
+  } catch {
+    errorMessage.value = '无法读取该会话。'
+  }
+}
+
+async function submitMessage(): Promise<void> {
+  const content = draft.value.trim()
+  if (!content || !selectedConversation.value || isSending.value) return
+
+  isSending.value = true
+  errorMessage.value = ''
+  try {
+    selectedConversation.value = await sendMessage(selectedConversation.value.id, content)
+    draft.value = ''
+    await refreshConversations(false)
+  } catch {
+    errorMessage.value = '消息没有保存，请检查连接后重试。'
+  } finally {
+    isSending.value = false
   }
 }
 
@@ -63,7 +88,7 @@ async function signOut(): Promise<void> {
   await router.replace('/login')
 }
 
-onMounted(refreshHealth)
+onMounted(initialize)
 </script>
 
 <template>
@@ -71,7 +96,7 @@ onMounted(refreshHealth)
     <section class="hero">
       <div class="top-row">
         <div>
-          <p class="eyebrow">M2 · Identity</p>
+          <p class="eyebrow">M2 · Conversations</p>
           <h1>AfterCare AI</h1>
           <p class="subtitle">{{ currentUser?.tenant_name }} · {{ currentUser?.role }}</p>
         </div>
@@ -80,31 +105,50 @@ onMounted(refreshHealth)
       <p class="signed-in-as">当前账号：{{ currentUser?.email }}</p>
     </section>
 
-    <section class="status-panel" aria-live="polite">
-      <div class="panel-heading">
-        <div>
-          <p class="panel-label">系统状态</p>
-          <h2 :class="['overall-status', systemState]">{{ statusLabel }}</h2>
+    <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
+
+    <section class="chat-layout" aria-label="会话">
+      <aside class="conversation-list">
+        <div class="panel-heading">
+          <h2>会话</h2>
+          <button type="button" :disabled="isLoading" @click="startConversation">新建会话</button>
         </div>
-        <button type="button" :disabled="systemState === 'checking'" @click="refreshHealth">
-          {{ systemState === 'checking' ? '正在检查…' : '重新检查' }}
+        <p v-if="isLoading" class="muted">正在加载…</p>
+        <p v-else-if="!conversations.length" class="muted">创建一个会话，开始咨询售后问题。</p>
+        <button
+          v-for="conversation in conversations"
+          :key="conversation.id"
+          type="button"
+          :class="['conversation-button', { selected: selectedConversation?.id === conversation.id }]"
+          @click="selectConversation(conversation.id)"
+        >
+          {{ showConversationLabel(conversation) }}
         </button>
-      </div>
+      </aside>
 
-      <div class="service-grid">
-        <article class="service-card">
-          <span>API</span>
-          <strong :class="apiState">{{ apiState === 'healthy' ? 'Healthy' : apiState }}</strong>
-        </article>
-        <article v-for="(service, name) in services" :key="name" class="service-card">
-          <span>{{ name }}</span>
-          <strong :class="service.status">{{ service.status }}</strong>
-        </article>
-      </div>
-
-      <p v-if="lastCheckedAt" class="timestamp">
-        最近检查：{{ lastCheckedAt.toLocaleTimeString('zh-CN') }}
-      </p>
+      <section class="message-panel" aria-live="polite">
+        <template v-if="selectedConversation">
+          <div class="message-list">
+            <p v-if="!selectedConversation.messages.length" class="muted">发送第一条消息开始对话。</p>
+            <article
+              v-for="message in selectedConversation.messages"
+              :key="message.id"
+              :class="['message', message.role]"
+            >
+              <strong>{{ message.role === 'user' ? '你' : 'AfterCare AI' }}</strong>
+              <p>{{ message.content }}</p>
+            </article>
+          </div>
+          <form class="message-form" @submit.prevent="submitMessage">
+            <label for="message">消息</label>
+            <textarea id="message" v-model="draft" :disabled="isSending" maxlength="4000" />
+            <button type="submit" :disabled="isSending || !draft.trim()">
+              {{ isSending ? '发送中…' : '发送' }}
+            </button>
+          </form>
+        </template>
+        <p v-else class="muted">请选择或创建一个会话。</p>
+      </section>
     </section>
   </main>
 </template>
