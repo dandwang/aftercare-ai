@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -161,3 +162,121 @@ def test_blank_message_is_rejected_without_persisting_data(
             assert len((await session.execute(select(Conversation))).scalars().all()) == 1
 
     asyncio.run(assert_no_messages())
+
+
+def test_streamed_reply_is_chunked_and_persisted(
+    client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    test_client, _ = client
+    token = register_tenant_admin(test_client, "stream-store", "stream@example.com")
+    conversation_id = test_client.post("/api/v1/conversations", headers=bearer(token)).json()["id"]
+
+    streamed = test_client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        headers=bearer(token),
+        json={"content": "Where is my order?"},
+    )
+
+    assert streamed.status_code == 200
+    assert streamed.headers["content-type"].startswith("text/event-stream")
+    assert "event: started" in streamed.text
+    assert "event: delta" in streamed.text
+    assert "event: completed" in streamed.text
+    reloaded = test_client.get(f"/api/v1/conversations/{conversation_id}", headers=bearer(token))
+    reply = reloaded.json()["messages"][1]
+    assert reply["content"] == "Placeholder reply: Where is my order?"
+    assert reply["generation_status"] == "completed"
+    assert reply["reply_version"] == 1
+
+
+def test_stop_marks_a_running_reply_cancelled(
+    client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    test_client, session_factory = client
+    token = register_tenant_admin(test_client, "stop-store", "stop@example.com")
+    conversation_id = test_client.post("/api/v1/conversations", headers=bearer(token)).json()["id"]
+
+    async def add_running_reply() -> str:
+        async with session_factory() as session:
+            conversation = await session.get(Conversation, UUID(conversation_id))
+            assert conversation is not None
+            user = Message(
+                conversation_id=conversation.id,
+                tenant_id=conversation.tenant_id,
+                role="user",
+                content="Help",
+            )
+            session.add(user)
+            await session.flush()
+            reply = Message(
+                conversation_id=conversation.id,
+                tenant_id=conversation.tenant_id,
+                role="assistant",
+                content="Partial",
+                in_reply_to_message_id=user.id,
+                reply_version=1,
+                generation_status="generating",
+                is_current=True,
+            )
+            session.add(reply)
+            await session.commit()
+            return str(reply.id)
+
+    reply_id = asyncio.run(add_running_reply())
+    stopped = test_client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/{reply_id}/stop", headers=bearer(token)
+    )
+
+    assert stopped.status_code == 200
+    assert stopped.json()["generation_status"] == "cancelled"
+    assert stopped.json()["is_current"] is False
+
+
+def test_regeneration_adds_a_new_current_reply_version(
+    client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    test_client, _ = client
+    token = register_tenant_admin(test_client, "version-store", "version@example.com")
+    conversation_id = test_client.post("/api/v1/conversations", headers=bearer(token)).json()["id"]
+    test_client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=bearer(token),
+        json={"content": "Where is my order?"},
+    )
+    original_reply_id = test_client.get(
+        f"/api/v1/conversations/{conversation_id}", headers=bearer(token)
+    ).json()["messages"][1]["id"]
+
+    regenerated = test_client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/{original_reply_id}/regenerate/stream",
+        headers=bearer(token),
+    )
+    assert regenerated.status_code == 200
+    assert "event: completed" in regenerated.text
+    replies = [
+        message
+        for message in test_client.get(
+            f"/api/v1/conversations/{conversation_id}", headers=bearer(token)
+        ).json()["messages"]
+        if message["role"] == "assistant"
+    ]
+    assert [reply["reply_version"] for reply in replies] == [1, 2]
+    assert [reply["is_current"] for reply in replies] == [False, True]
+
+
+def test_streaming_endpoints_keep_conversation_ownership_boundary(
+    client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    test_client, _ = client
+    owner_token = register_tenant_admin(test_client, "stream-owner", "stream-owner@example.com")
+    other_token = register_tenant_admin(test_client, "stream-other", "stream-other@example.com")
+    created = test_client.post("/api/v1/conversations", headers=bearer(owner_token))
+    conversation_id = created.json()["id"]
+
+    stream_attempt = test_client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        headers=bearer(other_token),
+        json={"content": "Read another tenant conversation"},
+    )
+
+    assert stream_attempt.status_code == 404

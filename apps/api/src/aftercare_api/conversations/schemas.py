@@ -24,6 +24,10 @@ class MessageResponse(BaseModel):
     id: UUID
     role: str
     content: str
+    in_reply_to_message_id: UUID | None
+    reply_version: int | None
+    generation_status: str
+    is_current: bool
     created_at: datetime
 
 

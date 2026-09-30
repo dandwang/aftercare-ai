@@ -55,4 +55,39 @@ describe('conversation API client', () => {
       'CONVERSATION_REQUEST_FAILED_404',
     )
   })
+
+  it('parses streamed lifecycle events from an authenticated POST request', async () => {
+    const message = {
+      id: 'b72e1c0c-4efc-44b8-bb63-6694c6d8c1bd',
+      role: 'assistant',
+      content: 'Placeholder reply: Hello',
+      in_reply_to_message_id: 'c72e1c0c-4efc-44b8-bb63-6694c6d8c1bd',
+      reply_version: 1,
+      generation_status: 'completed',
+      is_current: true,
+      created_at: '2026-09-23T00:00:00Z',
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          `event: started\ndata: ${JSON.stringify({ message: { ...message, content: '' } })}\n\n` +
+            `event: delta\ndata: ${JSON.stringify({ message_id: message.id, content: 'Hello' })}\n\n` +
+            `event: completed\ndata: ${JSON.stringify({ message })}\n\n`,
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ),
+      ),
+    )
+    const { streamMessage } = await loadConversationApi()
+    const events: string[] = []
+
+    await streamMessage(
+      'a72e1c0c-4efc-44b8-bb63-6694c6d8c1bd',
+      'Hello',
+      (event) => events.push(event.type),
+      new AbortController().signal,
+    )
+
+    expect(events).toEqual(['started', 'delta', 'completed'])
+  })
 })
