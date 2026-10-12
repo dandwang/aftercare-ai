@@ -93,6 +93,36 @@
 - **代价**：故障/强制退出可能漏记，记录不防篡改，无保留策略或可靠重试；审计 UUID 元数据可被管理员查看，但不会授权读取对应私有会话。多租户身份切换、Tool 审计和知识权限仍为后续范围。
 - **验证方式**：角色矩阵、旧 token 角色变更、跨租户审计过滤、管理员/客服无法读顾客会话、正文/Secret 不进入审计、SSE 单请求单事件；三角色真实 HTTP 正常链路；独立 PostgreSQL 空库升级及带数据回退重升级。
 
+## ADR-011 M3 知识权限与生效版本契约
+
+- **状态**：Accepted（2026-10-12，用户明确确认 M3-A 权限与生命周期契约；尚未实现）。
+- **背景**：M2 已有可信身份和会话所有权；新增知识库不能让模型或客户端选择租户，也不能让管理员读取其他用户会话。
+- **方案**：仅管理员管理本租户文档；三角色在自己的会话使用 customer_visible，管理员/客服可使用 staff_only。默认上传可见性为 staff_only。两路召回使用同一后端权限过滤，候选进入模型前及引用展开时再次按数据库复核。
+- **生命周期**：PostgreSQL 的 active_version_id 是权威；新版本完整索引 ready 后才切换，失败保留旧版；删除先清空 active 并标记 deleted，再清理全部版本索引与原文件。引用固定绑定具体回复版本，删除不级联抹掉聊天历史；新问题和重新生成不能用旧助手回答作为现行政策。
+- **代价与范围**：首版没有自定义成员 ACL、动态权限编辑、匿名知识访问、全量隐私删除或生产自动补偿。
+- **验证方式**：管理员管理与顾客/客服 403、跨租户 404、顾客内部知识过滤、七天更新十五天及删除后重新检索，引用历史和权限重查。
+- **详细契约**：[M3-A](milestones/M3-A.md)。尚无对应业务实现。
+
+## ADR-012 M3 独立存储与任务环境
+
+- **状态**：Accepted（2026-10-12，用户明确确认固定旧版 MinIO、新卷与新凭据的本地隔离用途；尚未启动或实现）。
+- **背景**：API 尚无上传和后台任务，已有长期环境、M2 验证环境及其他应用运行，不能混用数据卷。MinIO 官方社区仓库已归档，不再以 latest 为可维护版本来源。
+- **方案**：新增 aftercare-m3-verify 独立 Compose、数据库、网络、卷和凭据。本地 MinIO 候选固定为 `minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e`，实测版本 RELEASE.2025-09-07T16-13-09Z；新私有 bucket，不复用其他应用容器或凭据。仅用于学习演示，公开部署前重新选受维护 S3 服务。
+- **任务**：Celery + 独立 Redis，Linux Worker、并发 1，共享 API 领域代码；上传完成存储和元数据提交后再投递。数据库记录任务权威状态，不依赖 result backend。Worker 使用归属自身进程/事件循环的数据库连接，迁移完成后才消费。
+- **代价**：数据库/对象存储/队列不是共同事务；只做明确失败、最小清理和人工重试，不保证自动可靠投递或崩溃恢复。boto3 为候选适配器，精确依赖版本在 B 锁定。
+- **验证方式**：独立 PostgreSQL 迁移、实际私有对象读写和 Worker 读取任务、无跨项目卷/端口复用；固定旧版不等于生产安全证明。
+- **来源**：[MinIO 官方仓库](https://github.com/minio/minio)、[Celery Redis](https://docs.celeryq.dev/en/stable/getting-started/backends-and-brokers/redis.html)。
+
+## ADR-013 M3 云回答与本机检索评估
+
+- **状态**：运行路线 Accepted（用户于 2026-10-12 选择云模型回答、本机 Embedding/重排）；具体模型和 Sparse 实现 Proposed，尚未运行验证。
+- **背景**：不能把已有确定性占位回复当作真实 RAG；本机有 31.8 GiB 主机内存，Docker 分配约 15.5 GiB，需与其他服务共享。
+- **路线**：回答通过用户选定云 API；Dense 和重排先评估 CPU。本机候选 Dense 为 FastEmbed / BAAI/bge-small-zh-v1.5（512 维），重排为 BAAI/bge-reranker-base；模型 revision 与锁定版本支持在 D 复核。Sparse 先评估中文分词 + BM25 类编码，不直接套英文默认 Qdrant/bm25。
+- **预算**：检索输入编码与云回答预算编码分别处理；cl100k_base 的 Token 数不能当作所有模型的实际输入长度或供应商账单。完整云消息、证据、标签和输出预留纳入预算。
+- **待定项**：云供应商、endpoint、model ID、允许费用及 Secret 注入在 E 前由用户确认；检索模型下载、中文质量、耗时、内存与包兼容在 D 批准范围验证。B/C 不依赖云凭据，不提前安装模型依赖。
+- **验证方式**：D 的小型中文问题集和真实模型资源测量；E 至少一次明确授权的真实云调用；测试替身不代替真实验收。
+- **来源**：[FastEmbed Dense 支持列表](https://raw.githubusercontent.com/qdrant/fastembed/main/fastembed/text/onnx_embedding.py)、[FastEmbed 重排列表](https://raw.githubusercontent.com/qdrant/fastembed/main/fastembed/rerank/cross_encoder/onnx_text_cross_encoder.py)、[BM25 源码](https://raw.githubusercontent.com/qdrant/fastembed/main/fastembed/sparse/bm25.py)。上游 main 不等于本项目已锁定版本。
+
 ## 新 ADR 模板
 
 ```markdown
