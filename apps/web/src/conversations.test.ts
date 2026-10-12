@@ -90,4 +90,57 @@ describe('conversation API client', () => {
 
     expect(events).toEqual(['started', 'delta', 'completed'])
   })
+
+  it('rejects EOF without a terminal event and releases the reader', async () => {
+    const response = new Response('event: started\ndata: {"message":{"id":"reply"}}\n\n')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response))
+    const { streamMessage } = await loadConversationApi()
+    await expect(streamMessage('conversation', 'Hello', () => {}, new AbortController().signal))
+      .rejects.toThrow('REPLY_STREAM_INCOMPLETE')
+    expect(response.body?.locked).toBe(false)
+  })
+
+  it('parses byte-fragmented UTF-8 frames and cancels after the terminal event', async () => {
+    const message = { id: 'reply', content: '订单' }
+    const bytes = new TextEncoder().encode(
+      `event: started\ndata: ${JSON.stringify({ message })}\n\n` +
+      `event: delta\ndata: ${JSON.stringify({ message_id: 'reply', content: '订单' })}\n\n` +
+      `event: cancelled\ndata: ${JSON.stringify({ message })}\n\n`,
+    )
+    const cancel = vi.fn()
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        for (const byte of bytes) controller.enqueue(new Uint8Array([byte]))
+      },
+      cancel,
+    }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response))
+    const { streamMessage } = await loadConversationApi()
+    const events: string[] = []
+    await streamMessage('conversation', 'Hello', (event) => {
+      events.push(event.type === 'delta' ? event.content : event.type)
+    }, new AbortController().signal)
+    expect(events).toEqual(['started', '订单', 'cancelled'])
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(response.body?.locked).toBe(false)
+  })
+
+  it('rejects events for another reply and cancels the underlying stream', async () => {
+    const cancel = vi.fn()
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          'event: started\ndata: {"message":{"id":"reply"}}\n\n' +
+          'event: delta\ndata: {"message_id":"another","content":"wrong"}\n\n',
+        ))
+      },
+      cancel,
+    }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response))
+    const { streamMessage } = await loadConversationApi()
+    await expect(streamMessage('conversation', 'Hello', () => {}, new AbortController().signal))
+      .rejects.toThrow('REPLY_STREAM_INVALID_SEQUENCE')
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(response.body?.locked).toBe(false)
+  })
 })

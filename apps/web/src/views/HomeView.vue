@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
@@ -26,13 +26,21 @@ const isSending = ref(false)
 const errorMessage = ref('')
 const activeReplyId = ref<string | null>(null)
 let streamController: AbortController | null = null
+let activeConversationId: string | null = null
+let disposed = false
+let conversationLoadId = 0
 
 function showConversationLabel(conversation: Conversation): string {
   return `会话 · ${new Date(conversation.updated_at).toLocaleString('zh-CN')}`
 }
 
 async function loadConversation(conversationId: string): Promise<void> {
-  selectedConversation.value = await getConversation(conversationId)
+  const loadId = ++conversationLoadId
+  const conversation = await getConversation(conversationId)
+  if (!disposed && loadId === conversationLoadId &&
+    (!isSending.value || activeConversationId === conversationId)) {
+    selectedConversation.value = conversation
+  }
 }
 
 async function refreshConversations(selectNewest = true): Promise<void> {
@@ -53,6 +61,7 @@ async function initialize(): Promise<void> {
 }
 
 async function startConversation(): Promise<void> {
+  if (isSending.value) return
   errorMessage.value = ''
   try {
     const conversation = await createConversation()
@@ -64,6 +73,7 @@ async function startConversation(): Promise<void> {
 }
 
 async function selectConversation(conversationId: string): Promise<void> {
+  if (isSending.value) return
   errorMessage.value = ''
   try {
     await loadConversation(conversationId)
@@ -79,6 +89,7 @@ async function submitMessage(): Promise<void> {
   isSending.value = true
   errorMessage.value = ''
   const conversationId = selectedConversation.value.id
+  activeConversationId = conversationId
   selectedConversation.value.messages.push({
     id: `pending-user-${Date.now()}`,
     role: 'user',
@@ -90,22 +101,34 @@ async function submitMessage(): Promise<void> {
     created_at: new Date().toISOString(),
   })
   draft.value = ''
-  streamController = new AbortController()
+  const controller = new AbortController()
+  streamController = controller
   try {
-    await streamMessage(conversationId, content, applyReplyEvent, streamController.signal)
-    await refreshConversations(false)
+    await streamMessage(conversationId, content,
+      (event) => applyReplyEvent(conversationId, event), controller.signal)
+    if (!disposed) await refreshConversations(false)
   } catch {
-    if (!streamController?.signal.aborted) errorMessage.value = '消息流已中断，请检查连接后重试。'
+    if (!disposed && !controller.signal.aborted) errorMessage.value = '消息流已中断，请检查连接后重试。'
   } finally {
-    await loadConversation(conversationId)
+    await finishStream(conversationId)
+  }
+}
+
+async function finishStream(conversationId: string): Promise<void> {
+  try {
+    if (!disposed) await loadConversation(conversationId)
+  } catch {
+    if (!disposed) errorMessage.value = '无法重新读取消息，请检查连接后刷新。'
+  } finally {
     streamController = null
+    activeConversationId = null
     activeReplyId.value = null
     isSending.value = false
   }
 }
 
-function applyReplyEvent(event: ReplyStreamEvent): void {
-  if (!selectedConversation.value) return
+function applyReplyEvent(conversationId: string, event: ReplyStreamEvent): void {
+  if (disposed || selectedConversation.value?.id !== conversationId) return
   if (event.type === 'started') {
     activeReplyId.value = event.message.id
     selectedConversation.value.messages.push(event.message)
@@ -118,13 +141,20 @@ function applyReplyEvent(event: ReplyStreamEvent): void {
   }
   const index = selectedConversation.value.messages.findIndex((item) => item.id === event.message.id)
   if (index >= 0) selectedConversation.value.messages[index] = event.message
+  if (event.type === 'completed') {
+    for (const message of selectedConversation.value.messages) {
+      if (message.role === 'assistant' && message.id !== event.message.id &&
+        message.in_reply_to_message_id === event.message.in_reply_to_message_id) message.is_current = false
+    }
+  }
 }
 
 async function stopGenerating(): Promise<void> {
-  if (!selectedConversation.value || !activeReplyId.value) return
+  if (!activeConversationId || !activeReplyId.value) return
+  const controller = streamController
   try {
-    await stopMessage(selectedConversation.value.id, activeReplyId.value)
-    streamController?.abort()
+    await stopMessage(activeConversationId, activeReplyId.value)
+    controller?.abort()
   } catch {
     errorMessage.value = '无法停止生成，请稍后重试。'
   }
@@ -135,26 +165,32 @@ async function regenerate(message: Message): Promise<void> {
   isSending.value = true
   errorMessage.value = ''
   const conversationId = selectedConversation.value.id
-  streamController = new AbortController()
+  activeConversationId = conversationId
+  const controller = new AbortController()
+  streamController = controller
   try {
-    await regenerateMessage(conversationId, message.id, applyReplyEvent, streamController.signal)
-    await refreshConversations(false)
+    await regenerateMessage(conversationId, message.id,
+      (event) => applyReplyEvent(conversationId, event), controller.signal)
+    if (!disposed) await refreshConversations(false)
   } catch {
-    if (!streamController?.signal.aborted) errorMessage.value = '无法重新生成回复，请稍后重试。'
+    if (!disposed && !controller.signal.aborted) errorMessage.value = '无法重新生成回复，请稍后重试。'
   } finally {
-    await loadConversation(conversationId)
-    streamController = null
-    activeReplyId.value = null
-    isSending.value = false
+    await finishStream(conversationId)
   }
 }
 
 async function signOut(): Promise<void> {
+  disposed = true
+  streamController?.abort()
   logout()
   await router.replace('/login')
 }
 
 onMounted(initialize)
+onBeforeUnmount(() => {
+  disposed = true
+  streamController?.abort()
+})
 </script>
 
 <template>
@@ -177,7 +213,7 @@ onMounted(initialize)
       <aside class="conversation-list">
         <div class="panel-heading">
           <h2>会话</h2>
-          <button type="button" :disabled="isLoading" @click="startConversation">新建会话</button>
+          <button type="button" :disabled="isLoading || isSending" @click="startConversation">新建会话</button>
         </div>
         <p v-if="isLoading" class="muted">正在加载…</p>
         <p v-else-if="!conversations.length" class="muted">创建一个会话，开始咨询售后问题。</p>
@@ -185,6 +221,7 @@ onMounted(initialize)
           v-for="conversation in conversations"
           :key="conversation.id"
           type="button"
+          :disabled="isSending"
           :class="['conversation-button', { selected: selectedConversation?.id === conversation.id }]"
           @click="selectConversation(conversation.id)"
         >

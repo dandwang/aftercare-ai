@@ -1,14 +1,16 @@
 """HTTP endpoints for tenant-scoped conversations."""
 
-import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from aftercare_api.conversations.models import Message
 from aftercare_api.conversations.schemas import (
@@ -20,6 +22,7 @@ from aftercare_api.conversations.schemas import (
 from aftercare_api.conversations.service import (
     ConversationNotFoundError,
     MessageNotFoundError,
+    ReplyAlreadyGeneratingError,
     add_message_pair,
     cancel_reply,
     create_conversation,
@@ -38,6 +41,49 @@ from aftercare_api.identity.service import CurrentIdentity
 
 router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
 not_found = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+logger = logging.getLogger(__name__)
+
+
+async def cleanup_reply(session: AsyncSession, reply_id: UUID) -> None:
+    """Cancel unfinished work using a fresh transaction even under ASGI cancellation."""
+
+    with anyio.move_on_after(3, shield=True) as cleanup_scope:
+        try:
+            await session.rollback()
+            factory = async_sessionmaker(session.bind, expire_on_commit=False)
+            async with factory() as cleanup_session:
+                await cleanup_session.execute(
+                    update(Message)
+                    .where(Message.id == reply_id, Message.generation_status == "generating")
+                    .values(generation_status="cancelled", is_current=False)
+                )
+                await cleanup_session.commit()
+        except Exception as exc:
+            logger.error("Reply cleanup failed: %s", type(exc).__name__)
+    if cleanup_scope.cancel_called:
+        logger.error("Reply cleanup timed out")
+
+
+class ReplyStreamingResponse(StreamingResponse):
+    """Cover send failures and disconnects before the body iterator starts."""
+
+    def __init__(self, request, session, reply, source_content):
+        self.session = session
+        self.reply_id = reply.id
+        super().__init__(
+            reply_event_stream(request, session, reply, source_content),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            try:
+                await self.body_iterator.aclose()
+            finally:
+                await cleanup_reply(self.session, self.reply_id)
 
 
 def sse_event(event: str, payload: dict[str, object]) -> str:
@@ -54,9 +100,12 @@ async def reply_event_stream(
 ) -> AsyncIterator[str]:
     """Stream reply lifecycle events and persist cancellation after disconnects."""
 
-    response_message = MessageResponse.model_validate(reply).model_dump(mode="json")
-    yield sse_event("started", {"message": response_message})
+    reply_id = reply.id
     try:
+        if await request.is_disconnected():
+            return
+        response_message = MessageResponse.model_validate(reply).model_dump(mode="json")
+        yield sse_event("started", {"message": response_message})
         async for chunk in stream_reply_chunks(session, reply, source_content):
             if await request.is_disconnected():
                 await cancel_reply(session, reply)
@@ -66,13 +115,8 @@ async def reply_event_stream(
         event = "completed" if reply.generation_status == "completed" else "cancelled"
         response_message = MessageResponse.model_validate(reply).model_dump(mode="json")
         yield sse_event(event, {"message": response_message})
-    except asyncio.CancelledError:
-        await cancel_reply(session, reply)
-        raise
     finally:
-        await session.refresh(reply)
-        if reply.generation_status == "generating":
-            await cancel_reply(session, reply)
+        await cleanup_reply(session, reply_id)
 
 
 @router.post("", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
@@ -151,11 +195,7 @@ async def stream_message_endpoint(
         _, reply = await create_streaming_reply(session, conversation_id, payload.content, identity)
     except ConversationNotFoundError:
         raise not_found from None
-    return StreamingResponse(
-        reply_event_stream(request, session, reply, payload.content),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return ReplyStreamingResponse(request, session, reply, payload.content)
 
 
 @router.post("/{conversation_id}/messages/{message_id}/stop", response_model=MessageResponse)
@@ -189,8 +229,6 @@ async def regenerate_message_endpoint(
         source_content = await get_reply_source_content(session, reply)
     except (ConversationNotFoundError, MessageNotFoundError):
         raise not_found from None
-    return StreamingResponse(
-        reply_event_stream(request, session, reply, source_content),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    except ReplyAlreadyGeneratingError:
+        raise HTTPException(status_code=409, detail="Reply already generating") from None
+    return ReplyStreamingResponse(request, session, reply, source_content)

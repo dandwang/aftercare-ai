@@ -4,7 +4,8 @@ import asyncio
 from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aftercare_api.conversations.models import Conversation, Message, utc_now
@@ -17,6 +18,10 @@ class ConversationNotFoundError(Exception):
 
 class MessageNotFoundError(Exception):
     """Raised when a reply is absent or inaccessible through its conversation."""
+
+
+class ReplyAlreadyGeneratingError(Exception):
+    """Raised when the same user input already has a running reply."""
 
 
 async def create_conversation(session: AsyncSession, identity: CurrentIdentity) -> Conversation:
@@ -135,7 +140,7 @@ async def create_streaming_reply(
         in_reply_to_message_id=user_message.id,
         reply_version=1,
         generation_status="generating",
-        is_current=True,
+        is_current=False,
         created_at=created_at + timedelta(microseconds=1),
     )
     conversation.updated_at = assistant_message.created_at
@@ -180,6 +185,29 @@ async def create_regenerated_reply(
     ):
         raise MessageNotFoundError
     conversation = await get_conversation(session, conversation_id, identity)
+    source = (
+        await session.execute(
+            select(Message)
+            .where(
+                Message.id == previous_reply.in_reply_to_message_id,
+                Message.conversation_id == conversation_id,
+                Message.tenant_id == identity.tenant_id,
+                Message.role == "user",
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if source is None:
+        raise MessageNotFoundError
+    running = await session.scalar(
+        select(Message.id).where(
+            Message.in_reply_to_message_id == source.id,
+            Message.generation_status == "generating",
+        )
+    )
+    if running is not None:
+        await session.rollback()
+        raise ReplyAlreadyGeneratingError
     versions = await session.execute(
         select(Message.reply_version)
         .where(Message.in_reply_to_message_id == previous_reply.in_reply_to_message_id)
@@ -200,7 +228,21 @@ async def create_regenerated_reply(
     )
     conversation.updated_at = created_at
     session.add(regenerated)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        # SQLite has no row locks; database uniqueness remains the final guard.
+        if any(
+            name in str(exc.orig)
+            for name in (
+                "uq_messages_reply_version",
+                "uq_messages_reply_generating",
+                "messages.in_reply_to_message_id",
+            )
+        ):
+            raise ReplyAlreadyGeneratingError from exc
+        raise
     return conversation, regenerated
 
 
@@ -210,7 +252,12 @@ async def get_reply_source_content(session: AsyncSession, reply: Message) -> str
     if reply.in_reply_to_message_id is None:
         raise MessageNotFoundError
     source = await session.get(Message, reply.in_reply_to_message_id)
-    if source is None or source.role != "user":
+    if (
+        source is None
+        or source.role != "user"
+        or source.conversation_id != reply.conversation_id
+        or source.tenant_id != reply.tenant_id
+    ):
         raise MessageNotFoundError
     return source.content
 
@@ -218,33 +265,65 @@ async def get_reply_source_content(session: AsyncSession, reply: Message) -> str
 async def cancel_reply(session: AsyncSession, reply: Message) -> Message:
     """Mark a running reply cancelled; completed replies keep their immutable history."""
 
-    if reply.generation_status == "generating":
-        reply.generation_status = "cancelled"
-        reply.is_current = False
-        await session.commit()
+    await session.execute(
+        update(Message)
+        .where(Message.id == reply.id, Message.generation_status == "generating")
+        .values(generation_status="cancelled", is_current=False)
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    await session.refresh(reply)
     return reply
+
+
+async def complete_reply(session: AsyncSession, reply: Message) -> None:
+    """Atomically finish a running reply and switch its current version."""
+
+    await session.execute(
+        select(Message.id).where(Message.id == reply.in_reply_to_message_id).with_for_update()
+    )
+    completed_id = await session.scalar(
+        update(Message)
+        .where(Message.id == reply.id, Message.generation_status == "generating")
+        .values(generation_status="completed", is_current=False)
+        .returning(Message.id)
+        .execution_options(synchronize_session=False)
+    )
+    if completed_id is not None:
+        await session.execute(
+            update(Message)
+            .where(
+                Message.in_reply_to_message_id == reply.in_reply_to_message_id,
+                Message.is_current.is_(True),
+            )
+            .values(is_current=False)
+            .execution_options(synchronize_session=False)
+        )
+        await session.execute(
+            update(Message)
+            .where(Message.id == reply.id)
+            .values(is_current=True)
+            .execution_options(synchronize_session=False)
+        )
+    await session.commit()
+    await session.refresh(reply)
 
 
 async def stream_reply_chunks(session: AsyncSession, reply: Message, source_content: str):
     """Yield deterministic chunks while observing cancellation between every chunk."""
 
-    for chunk in (f"Placeholder reply: {source_content}").split(" "):
+    for index, word in enumerate((f"Placeholder reply: {source_content}").split(" ")):
         await asyncio.sleep(0.05)
-        await session.refresh(reply)
-        if reply.generation_status != "generating":
-            return
-        reply.content += (" " if reply.content else "") + chunk
-        await session.commit()
-        yield chunk
-    previous_current = await session.execute(
-        select(Message).where(
-            Message.in_reply_to_message_id == reply.in_reply_to_message_id,
-            Message.id != reply.id,
-            Message.is_current.is_(True),
+        chunk = (" " if index else "") + word
+        content = await session.scalar(
+            update(Message)
+            .where(Message.id == reply.id, Message.generation_status == "generating")
+            .values(content=Message.content + chunk)
+            .returning(Message.content)
+            .execution_options(synchronize_session=False)
         )
-    )
-    for previous_reply in previous_current.scalars():
-        previous_reply.is_current = False
-    reply.generation_status = "completed"
-    reply.is_current = True
-    await session.commit()
+        await session.commit()
+        if content is None:
+            return
+        yield chunk
+    await complete_reply(session, reply)

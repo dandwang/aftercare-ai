@@ -38,6 +38,7 @@ AfterCare AI 是一个面向中小电商商家的多租户 AI 客服与工单系
 
 ## 交付原则
 
+- 当前是学习 AI 应用开发的演示项目：默认优先正常端到端流程和易理解的实现，不要求全面边界判断、异常路径测试或生产可靠性机制。需要这些能力时另行明确范围；已批准并加入的改动和测试仍完成收尾。
 - 按端到端业务切片交付，不按框架或技术模块堆功能。
 - 每次改动先明确范围、验收方法和风险，再开始实现。
 - 测试结果是完成依据，页面“看起来能用”不是完成依据。
@@ -99,3 +100,41 @@ pnpm build
 API 的 `/health/live` 只表示进程存活；`/health/ready` 会实际检查 PostgreSQL、Redis 和 Qdrant，因此在基础服务没有启动时返回 `503` 是正确行为。
 
 PostgreSQL、Redis 和 Qdrant 默认只暴露在 Compose 内部网络，不占用宿主机端口。需要排障时应优先通过 API 就绪检查或 `docker compose exec` 访问，而不是公开数据服务端口。
+
+## 已加入的 M2-D 隔离验证
+
+这套验证用于复现本轮已完成的生命周期修复，不是后续学习任务的默认测试规模。`compose.verify.yaml` 使用独立项目 `aftercare-m2d-verify`、独立数据卷，以及只绑定回环地址的端口：Web `15173`、API `18000`、PostgreSQL `55432`，不会升级原 `aftercare-ai` 项目。
+
+```powershell
+docker compose -f compose.verify.yaml config --quiet
+docker compose -f compose.verify.yaml up --build -d --wait
+docker compose -f compose.verify.yaml exec -T postgres createdb -U aftercare aftercare_m2d_test
+Invoke-RestMethod http://127.0.0.1:18000/health/ready
+
+Set-Location apps/api
+$env:AFTERCARE_TEST_DATABASE_URL = 'postgresql+asyncpg://aftercare:aftercare@127.0.0.1:55432/aftercare_m2d_test'
+$env:AFTERCARE_TEST_API_URL = 'http://127.0.0.1:18000'
+uv run pytest
+Remove-Item Env:AFTERCARE_TEST_DATABASE_URL
+Remove-Item Env:AFTERCARE_TEST_API_URL
+```
+
+`createdb` 只需在新的验证卷执行一次。PostgreSQL 测试会回退并升级指定测试库，因此只允许使用一次性 `_test` 数据库；HTTP 测试只允许上述独立 API 地址。没有设置这两个变量时，普通 Pytest 会跳过相应的 22 个集成测试。Docker Desktop 若未加入 PATH，可使用 `C:\Users\10164\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe` 执行相同命令。
+
+验证完成后，在项目根目录删除这一套临时容器和数据卷：
+
+```powershell
+docker compose -f compose.verify.yaml down --volumes
+```
+
+### 强制退出后的人工恢复边界
+
+普通断连和协程取消会自动收尾；进程强制终止或数据库不可用时，无法保证执行清理。本轮没有增加自动任务恢复功能。若数据库中遗留 `generating`，先停止**全部生成进程**，确认没有正在工作的生成器，再在对应数据库将遗留记录改为取消。以下示例仅针对独立验证项目：
+
+```powershell
+docker compose -f compose.verify.yaml stop api
+docker compose -f compose.verify.yaml exec -T postgres psql -U aftercare -d aftercare_m2d -c "UPDATE messages SET generation_status = 'cancelled', is_current = false WHERE generation_status = 'generating';"
+docker compose -f compose.verify.yaml up -d api
+```
+
+此操作不更改完成回复或旧当前版本；不能在其他 API/生成进程仍运行时批量执行。结构回退使用 Alembic，`20261012_04 → 20260923_03` 会移除新约束，但保留已经修正的来源关联和消息原文。存在歧义历史时升级会停止，先人工核对原始数据，不应绕过检查。

@@ -83,16 +83,32 @@ async function consumeReplyStream(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    buffer += decoder.decode(value, { stream: !done })
-    const frames = buffer.split(/\r?\n\r?\n/)
-    buffer = frames.pop() ?? ''
-    for (const frame of frames) {
-      const event = parseSseFrame(frame)
-      if (event) onEvent(event)
+  let replyId: string | null = null
+  let ended = false
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      ended = done
+      buffer += decoder.decode(value, { stream: !done })
+      const frames = buffer.split(/\r?\n\r?\n/)
+      buffer = frames.pop() ?? ''
+      for (const frame of frames) {
+        const event = parseSseFrame(frame)
+        if (!event) continue
+        if (event.type === 'started') {
+          if (replyId) throw new Error('REPLY_STREAM_INVALID_SEQUENCE')
+          replyId = event.message.id
+        } else if (!replyId || replyId !== ('message_id' in event ? event.message_id : event.message.id)) {
+          throw new Error('REPLY_STREAM_INVALID_SEQUENCE')
+        }
+        onEvent(event)
+        if (event.type === 'completed' || event.type === 'cancelled') return
+      }
+      if (done) throw new Error('REPLY_STREAM_INCOMPLETE')
     }
-    if (done) return
+  } finally {
+    if (!ended) await reader.cancel().catch(() => {})
+    reader.releaseLock()
   }
 }
 

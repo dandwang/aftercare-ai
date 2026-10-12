@@ -12,7 +12,9 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -56,6 +58,30 @@ class Message(Base):
         ),
         Index("ix_messages_conversation_created", "conversation_id", "created_at"),
         Index("ix_messages_reply_current", "in_reply_to_message_id", "is_current"),
+        UniqueConstraint(
+            "in_reply_to_message_id", "reply_version", name="uq_messages_reply_version"
+        ),
+        CheckConstraint(
+            "reply_version IS NULL OR reply_version > 0", name="ck_messages_reply_version"
+        ),
+        CheckConstraint(
+            "NOT is_current OR generation_status = 'completed'",
+            name="ck_messages_current_completed",
+        ),
+        Index(
+            "uq_messages_reply_current",
+            "in_reply_to_message_id",
+            unique=True,
+            postgresql_where=text("role = 'assistant' AND is_current"),
+            sqlite_where=text("role = 'assistant' AND is_current"),
+        ),
+        Index(
+            "uq_messages_reply_generating",
+            "in_reply_to_message_id",
+            unique=True,
+            postgresql_where=text("generation_status = 'generating'"),
+            sqlite_where=text("generation_status = 'generating'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)

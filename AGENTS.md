@@ -19,6 +19,15 @@ Use `README.md` for setup commands and `docs/LEARNING_LOG.md` for historical dec
 
 ## Required workflow
 
+### Learning-demo scope (user decision, 2026-10-12)
+
+- The current project is primarily a demo for learning AI application development.
+- Prioritize a small, understandable implementation and a repeatable normal end-to-end flow.
+- Do not default to comprehensive edge-case handling, exhaustive error-path tests, concurrency hardening, or production recovery machinery. Add them only when required to make the normal flow work or explicitly requested by the user.
+- Keep basic authentication, tenant ownership, and secret handling intact. Do not expand a learning milestone into production hardening without approval.
+- Preserve and finish already-approved changes and tests; this scope preference does not require deleting existing validation.
+- Treat production/Beta reliability work in historical requirements as later work unless explicitly included in the current task.
+
 1. Start with read-only inspection. Check Git status, the current branch and commit, relevant code, tests, and documentation.
 2. Before changing code, explain the current gap or root cause, proposed change, files likely to change, validation plan, and risks.
 3. Wait for explicit approval of that scope before modifying code.
@@ -75,4 +84,4 @@ For a documentation-only change, verify links, run `git diff --check`, and confi
 
 ## Definition of done
 
-A task is complete only when its approved acceptance cases pass, important failure paths are tested, the final diff matches the approved scope, documentation reflects the new current state, and remaining risks are reported. A successful page load alone is not completion evidence.
+For the current learning-demo stage, a task is complete when its approved normal acceptance flow is repeatable, proportionate checks pass, the final diff matches the approved scope, and documentation reflects the current state and practical limitations. Do not block completion on exhaustive unapproved failure-path coverage. Any failure-path tests already included in the approved task must still be finished and pass.

@@ -216,7 +216,7 @@ def test_stop_marks_a_running_reply_cancelled(
                 in_reply_to_message_id=user.id,
                 reply_version=1,
                 generation_status="generating",
-                is_current=True,
+                is_current=False,
             )
             session.add(reply)
             await session.commit()
@@ -267,7 +267,7 @@ def test_regeneration_adds_a_new_current_reply_version(
 def test_streaming_endpoints_keep_conversation_ownership_boundary(
     client: tuple[TestClient, async_sessionmaker[AsyncSession]],
 ) -> None:
-    test_client, _ = client
+    test_client, session_factory = client
     owner_token = register_tenant_admin(test_client, "stream-owner", "stream-owner@example.com")
     other_token = register_tenant_admin(test_client, "stream-other", "stream-other@example.com")
     created = test_client.post("/api/v1/conversations", headers=bearer(owner_token))
@@ -280,3 +280,17 @@ def test_streaming_endpoints_keep_conversation_ownership_boundary(
     )
 
     assert stream_attempt.status_code == 404
+    add_customer(session_factory, "stream-owner", "same-tenant@example.com")
+    same_tenant_token = login(test_client, "same-tenant@example.com")
+    original = test_client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=bearer(owner_token),
+        json={"content": "Owned reply"},
+    ).json()["messages"][-1]
+    for token in (other_token, same_tenant_token):
+        for action in ("stop", "regenerate/stream"):
+            denied = test_client.post(
+                f"/api/v1/conversations/{conversation_id}/messages/{original['id']}/{action}",
+                headers=bearer(token),
+            )
+            assert denied.status_code == 404
