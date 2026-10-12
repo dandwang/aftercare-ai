@@ -143,4 +143,18 @@ describe('conversation API client', () => {
     expect(cancel).toHaveBeenCalledOnce()
     expect(response.body?.locked).toBe(false)
   })
+
+  it('posts feedback against the concrete reply id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      id: 'feedback', message_id: 'reply-v1', rating: 'dislike', reason: 'unclear', detail: 'More detail',
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { submitFeedback } = await loadConversationApi()
+    const saved = await submitFeedback('conversation', 'reply-v1', 'dislike', 'unclear', 'More detail')
+    expect(saved.message_id).toBe('reply-v1')
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8000/api/v1/conversations/conversation/messages/reply-v1/feedback',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ rating: 'dislike', reason: 'unclear', detail: 'More detail' }) }),
+    )
+  })
 })

@@ -9,15 +9,26 @@ from uuid import UUID
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from aftercare_api.conversations.models import Message
+from aftercare_api.conversations.feedback import save_feedback
+from aftercare_api.conversations.models import (
+    Conversation,
+    ConversationSummary,
+    GenerationContext,
+    Message,
+    MessageFeedback,
+)
 from aftercare_api.conversations.schemas import (
+    ContextResponse,
     ConversationDetailResponse,
     ConversationResponse,
+    CreateFeedbackRequest,
     CreateMessageRequest,
+    FeedbackResponse,
     MessageResponse,
+    SummaryResponse,
 )
 from aftercare_api.conversations.service import (
     ConversationNotFoundError,
@@ -35,6 +46,7 @@ from aftercare_api.conversations.service import (
     list_messages,
     stream_reply_chunks,
 )
+from aftercare_api.conversations.token_budget import ContextBudgetError
 from aftercare_api.db.session import get_session
 from aftercare_api.identity.dependencies import require_current_identity
 from aftercare_api.identity.service import CurrentIdentity
@@ -42,6 +54,54 @@ from aftercare_api.identity.service import CurrentIdentity
 router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
 not_found = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 logger = logging.getLogger(__name__)
+
+
+async def conversation_detail(
+    session, conversation: Conversation, identity
+) -> ConversationDetailResponse:
+    messages = await list_messages(session, conversation.id)
+    feedback = (
+        await session.scalars(
+            select(MessageFeedback).where(
+                MessageFeedback.conversation_id == conversation.id,
+                MessageFeedback.tenant_id == identity.tenant_id,
+                MessageFeedback.actor_user_id == identity.user_id,
+            )
+        )
+    ).all()
+    snapshots = (
+        await session.scalars(
+            select(GenerationContext)
+            .where(
+                GenerationContext.conversation_id == conversation.id,
+                GenerationContext.tenant_id == identity.tenant_id,
+            )
+            .order_by(GenerationContext.created_at)
+        )
+    ).all()
+    summaries = {
+        summary.id: summary
+        for summary in (
+            await session.scalars(
+                select(ConversationSummary).where(
+                    ConversationSummary.conversation_id == conversation.id,
+                    ConversationSummary.tenant_id == identity.tenant_id,
+                )
+            )
+        ).all()
+    }
+    contexts = []
+    for snapshot in snapshots:
+        context = ContextResponse.model_validate(snapshot)
+        if snapshot.summary_id in summaries:
+            context.summary = SummaryResponse.model_validate(summaries[snapshot.summary_id])
+        contexts.append(context)
+    return ConversationDetailResponse(
+        **ConversationResponse.model_validate(conversation).model_dump(),
+        messages=messages,
+        feedback=feedback,
+        contexts=contexts,
+    )
 
 
 async def cleanup_reply(session: AsyncSession, reply_id: UUID) -> None:
@@ -152,11 +212,7 @@ async def get_conversation_endpoint(
         conversation = await get_conversation(session, conversation_id, identity)
     except ConversationNotFoundError:
         raise not_found from None
-    messages = await list_messages(session, conversation.id)
-    return ConversationDetailResponse(
-        **ConversationResponse.model_validate(conversation).model_dump(),
-        messages=messages,
-    )
+    return await conversation_detail(session, conversation, identity)
 
 
 @router.post("/{conversation_id}/messages", response_model=ConversationDetailResponse)
@@ -174,11 +230,9 @@ async def add_message_endpoint(
         )
     except ConversationNotFoundError:
         raise not_found from None
-    messages = await list_messages(session, conversation.id)
-    return ConversationDetailResponse(
-        **ConversationResponse.model_validate(conversation).model_dump(),
-        messages=messages,
-    )
+    except ContextBudgetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return await conversation_detail(session, conversation, identity)
 
 
 @router.post("/{conversation_id}/messages/stream")
@@ -195,6 +249,8 @@ async def stream_message_endpoint(
         _, reply = await create_streaming_reply(session, conversation_id, payload.content, identity)
     except ConversationNotFoundError:
         raise not_found from None
+    except ContextBudgetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return ReplyStreamingResponse(request, session, reply, payload.content)
 
 
@@ -231,4 +287,21 @@ async def regenerate_message_endpoint(
         raise not_found from None
     except ReplyAlreadyGeneratingError:
         raise HTTPException(status_code=409, detail="Reply already generating") from None
+    except ContextBudgetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return ReplyStreamingResponse(request, session, reply, source_content)
+
+
+@router.post("/{conversation_id}/messages/{message_id}/feedback", response_model=FeedbackResponse)
+async def feedback_endpoint(
+    conversation_id: UUID,
+    message_id: UUID,
+    payload: CreateFeedbackRequest,
+    identity: Annotated[CurrentIdentity, Depends(require_current_identity)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> FeedbackResponse:
+    try:
+        feedback = await save_feedback(session, conversation_id, message_id, identity, payload)
+    except (ConversationNotFoundError, MessageNotFoundError):
+        raise not_found from None
+    return FeedbackResponse.model_validate(feedback)

@@ -8,10 +8,12 @@ import {
   listConversations,
   regenerateMessage,
   stopMessage,
+  submitFeedback,
   streamMessage,
   type Conversation,
   type ConversationDetail,
   type Message,
+  type MessageFeedback,
   type ReplyStreamEvent,
 } from '../conversations'
 import { useAuth } from '../auth'
@@ -25,6 +27,10 @@ const isLoading = ref(true)
 const isSending = ref(false)
 const errorMessage = ref('')
 const activeReplyId = ref<string | null>(null)
+const feedbackMessageId = ref<string | null>(null)
+const feedbackReason = ref<MessageFeedback['reason']>('incorrect')
+const feedbackDetail = ref('')
+const isSavingFeedback = ref(false)
 let streamController: AbortController | null = null
 let activeConversationId: string | null = null
 let disposed = false
@@ -32,6 +38,41 @@ let conversationLoadId = 0
 
 function showConversationLabel(conversation: Conversation): string {
   return `会话 · ${new Date(conversation.updated_at).toLocaleString('zh-CN')}`
+}
+
+function feedbackFor(messageId: string): MessageFeedback | undefined {
+  return selectedConversation.value?.feedback?.find((feedback) => feedback.message_id === messageId)
+}
+
+function contextFor(messageId: string) {
+  return selectedConversation.value?.contexts?.find((context) => context.message_id === messageId)
+}
+
+function editDislike(message: Message): void {
+  feedbackMessageId.value = message.id
+  const feedback = feedbackFor(message.id)
+  feedbackReason.value = feedback?.reason ?? 'incorrect'
+  feedbackDetail.value = feedback?.detail ?? ''
+}
+
+async function saveFeedback(messageId: string, rating: MessageFeedback['rating']): Promise<void> {
+  const conversation = selectedConversation.value
+  if (!conversation || isSavingFeedback.value) return
+  isSavingFeedback.value = true
+  try {
+    const saved = await submitFeedback(conversation.id, messageId, rating,
+      rating === 'dislike' ? feedbackReason.value : null,
+      rating === 'dislike' ? feedbackDetail.value : '')
+    if (!disposed && selectedConversation.value?.id === conversation.id) {
+      const feedback = conversation.feedback ?? []
+      conversation.feedback = [...feedback.filter((item) => item.message_id !== messageId), saved]
+      feedbackMessageId.value = null
+    }
+  } catch {
+    errorMessage.value = '无法保存反馈，请稍后重试。'
+  } finally {
+    isSavingFeedback.value = false
+  }
 }
 
 async function loadConversation(conversationId: string): Promise<void> {
@@ -243,7 +284,7 @@ onBeforeUnmount(() => {
               <small v-if="message.role === 'assistant'">
                 {{ message.generation_status === 'generating' ? '正在生成…' : message.generation_status }}
                 <template v-if="message.reply_version"> · 版本 {{ message.reply_version }}</template>
-                <template v-if="message.reply_version && !message.is_current"> · 历史版本</template>
+                <template v-if="message.reply_version && !message.is_current && message.generation_status === 'completed'"> · 历史版本</template>
               </small>
               <button
                 v-if="message.role === 'assistant' && message.generation_status === 'completed'"
@@ -254,6 +295,37 @@ onBeforeUnmount(() => {
               >
                 重新生成
               </button>
+              <div v-if="message.role === 'assistant' && message.generation_status === 'completed'" class="feedback-row">
+                <button type="button" class="secondary-button" :disabled="isSending || isSavingFeedback"
+                  :aria-pressed="feedbackFor(message.id)?.rating === 'like'" @click="saveFeedback(message.id, 'like')">点赞</button>
+                <button type="button" class="secondary-button" :disabled="isSending || isSavingFeedback"
+                  :aria-pressed="feedbackFor(message.id)?.rating === 'dislike'" @click="editDislike(message)">点踩</button>
+                <small v-if="feedbackFor(message.id)">已保存{{ feedbackFor(message.id)?.rating === 'like' ? '点赞' : '点踩' }} · 版本 {{ message.reply_version }}</small>
+              </div>
+              <div v-if="feedbackMessageId === message.id" class="feedback-editor">
+                <label :for="`feedback-reason-${message.id}`">反馈原因</label>
+                <select :id="`feedback-reason-${message.id}`" v-model="feedbackReason" :disabled="isSavingFeedback">
+                  <option value="incorrect">信息不准确</option>
+                  <option value="irrelevant">没有回答问题</option>
+                  <option value="unclear">表达不清楚</option>
+                  <option value="other">其他</option>
+                </select>
+                <label :for="`feedback-detail-${message.id}`">补充说明（可选）</label>
+                <textarea :id="`feedback-detail-${message.id}`" v-model="feedbackDetail" maxlength="500" :disabled="isSavingFeedback" />
+                <button type="button" :disabled="isSavingFeedback" @click="saveFeedback(message.id, 'dislike')">保存反馈</button>
+              </div>
+              <details v-if="contextFor(message.id)" class="context-details">
+                <summary>本次上下文 · 输入 {{ contextFor(message.id)?.input_token_count }} Token</summary>
+                <p>总预算 {{ contextFor(message.id)?.total_token_budget }}，预留输出 {{ contextFor(message.id)?.output_token_limit }} Token。</p>
+                <p>使用 {{ contextFor(message.id)?.selected_message_ids.length }} 条消息{{ contextFor(message.id)?.summary ? '和历史摘要' : '' }}。</p>
+                <template v-if="contextFor(message.id)?.summary">
+                  <strong>保留的历史事实（用户陈述）</strong>
+                  <ul>
+                    <li v-for="(fact, index) in contextFor(message.id)?.summary?.facts" :key="index">{{ fact.excerpt }}</li>
+                  </ul>
+                  <p v-if="!contextFor(message.id)?.summary?.facts.length">已保留近期历史摘录。</p>
+                </template>
+              </details>
             </article>
           </div>
           <form class="message-form" @submit.prevent="submitMessage">

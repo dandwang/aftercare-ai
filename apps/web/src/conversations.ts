@@ -19,6 +19,51 @@ export interface Message {
 
 export interface ConversationDetail extends Conversation {
   messages: Message[]
+  feedback?: MessageFeedback[]
+  contexts?: ReplyContext[]
+}
+
+export interface MessageFeedback {
+  id: string
+  message_id: string
+  rating: 'like' | 'dislike'
+  reason: 'incorrect' | 'irrelevant' | 'unclear' | 'other' | null
+  detail: string
+  updated_at: string
+}
+
+export interface ReplyContext {
+  message_id: string
+  selected_message_ids: string[]
+  input_token_count: number
+  output_token_limit: number
+  total_token_budget: number
+  tokenizer_name: string
+  tokenizer_version: string
+  prompt_format_version: string
+  summary: {
+    id: string
+    facts: { kind: string; value: string; excerpt: string; source_message_id: string }[]
+    content: string
+    covered_message_ids: string[]
+    token_count: number
+  } | null
+}
+
+export async function submitFeedback(
+  conversationId: string,
+  messageId: string,
+  rating: MessageFeedback['rating'],
+  reason: MessageFeedback['reason'] = null,
+  detail = '',
+): Promise<MessageFeedback> {
+  return parseResponse<MessageFeedback>(
+    await authenticatedFetch(`/api/v1/conversations/${conversationId}/messages/${messageId}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating, reason, detail }),
+    }),
+  )
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {

@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -98,5 +99,91 @@ class Message(Base):
     generation_status: Mapped[str] = mapped_column(String(16), default="completed")
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+
+
+class ConversationSummary(Base):
+    """Immutable source-backed excerpts for a covered prefix of a conversation."""
+
+    __tablename__ = "conversation_summaries"
+    __table_args__ = (Index("ix_summaries_conversation", "conversation_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE")
+    )
+    source_fingerprint: Mapped[str] = mapped_column(String(64))
+    covered_message_ids: Mapped[list[str]] = mapped_column(JSON)
+    facts: Mapped[list[dict[str, object]]] = mapped_column(JSON)
+    content: Mapped[str] = mapped_column(Text)
+    token_count: Mapped[int] = mapped_column(Integer)
+    builder_version: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+
+
+class GenerationContext(Base):
+    """The exact budgeted demo prompt frozen for one reply version."""
+
+    __tablename__ = "generation_contexts"
+    __table_args__ = (
+        Index("ix_contexts_conversation", "conversation_id"),
+        CheckConstraint(
+            "input_token_count >= 0 AND output_token_limit > 0 "
+            "AND input_token_count + output_token_limit <= total_token_budget",
+            name="ck_context_token_budget",
+        ),
+    )
+
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE")
+    )
+    summary_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversation_summaries.id", ondelete="SET NULL"), nullable=True
+    )
+    selected_message_ids: Mapped[list[str]] = mapped_column(JSON)
+    prompt: Mapped[str] = mapped_column(Text)
+    input_token_count: Mapped[int] = mapped_column(Integer)
+    output_token_limit: Mapped[int] = mapped_column(Integer)
+    total_token_budget: Mapped[int] = mapped_column(Integer)
+    tokenizer_name: Mapped[str] = mapped_column(String(40))
+    tokenizer_version: Mapped[str] = mapped_column(String(40))
+    prompt_format_version: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+
+
+class MessageFeedback(Base):
+    """One user's current feedback on a concrete completed reply version."""
+
+    __tablename__ = "message_feedback"
+    __table_args__ = (
+        UniqueConstraint("actor_user_id", "message_id", name="uq_feedback_actor_message"),
+        CheckConstraint("rating IN ('like', 'dislike')", name="ck_feedback_rating"),
+        Index("ix_feedback_conversation", "conversation_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE")
+    )
+    message_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"))
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    rating: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, server_default=func.now()
     )

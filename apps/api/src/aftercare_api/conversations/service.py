@@ -2,13 +2,20 @@
 
 import asyncio
 from datetime import timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aftercare_api.conversations.context import (
+    demo_reply,
+    prepare_context,
+    reply_text,
+    save_context,
+)
 from aftercare_api.conversations.models import Conversation, Message, utc_now
+from aftercare_api.conversations.token_budget import get_token_meter
 from aftercare_api.identity.service import CurrentIdentity
 
 
@@ -86,7 +93,10 @@ async def add_message_pair(
 
     conversation = await get_conversation(session, conversation_id, identity)
     created_at = utc_now()
+    user_id = uuid4()
+    context = await prepare_context(session, conversation, content, user_id)
     user_message = Message(
+        id=user_id,
         conversation_id=conversation.id,
         tenant_id=identity.tenant_id,
         role="user",
@@ -99,7 +109,9 @@ async def add_message_pair(
         conversation_id=conversation.id,
         tenant_id=identity.tenant_id,
         role="assistant",
-        content=f"Placeholder reply: {content}",
+        content=get_token_meter(context.settings.tokenizer_name).limit(
+            demo_reply(context.prompt), context.settings.output_token_limit
+        ),
         in_reply_to_message_id=user_message.id,
         reply_version=1,
         generation_status="completed",
@@ -108,6 +120,8 @@ async def add_message_pair(
     )
     conversation.updated_at = assistant_message.created_at
     session.add(assistant_message)
+    await session.flush()
+    await save_context(session, assistant_message, context)
     await session.commit()
     return conversation, [user_message, assistant_message]
 
@@ -122,7 +136,10 @@ async def create_streaming_reply(
 
     conversation = await get_conversation(session, conversation_id, identity)
     created_at = utc_now()
+    user_id = uuid4()
+    context = await prepare_context(session, conversation, content, user_id)
     user_message = Message(
+        id=user_id,
         conversation_id=conversation.id,
         tenant_id=identity.tenant_id,
         role="user",
@@ -145,6 +162,8 @@ async def create_streaming_reply(
     )
     conversation.updated_at = assistant_message.created_at
     session.add(assistant_message)
+    await session.flush()
+    await save_context(session, assistant_message, context)
     await session.commit()
     return conversation, assistant_message
 
@@ -208,6 +227,7 @@ async def create_regenerated_reply(
     if running is not None:
         await session.rollback()
         raise ReplyAlreadyGeneratingError
+    context = await prepare_context(session, conversation, source.content, source.id, source=source)
     versions = await session.execute(
         select(Message.reply_version)
         .where(Message.in_reply_to_message_id == previous_reply.in_reply_to_message_id)
@@ -229,6 +249,8 @@ async def create_regenerated_reply(
     conversation.updated_at = created_at
     session.add(regenerated)
     try:
+        await session.flush()
+        await save_context(session, regenerated, context)
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
@@ -312,7 +334,8 @@ async def complete_reply(session: AsyncSession, reply: Message) -> None:
 async def stream_reply_chunks(session: AsyncSession, reply: Message, source_content: str):
     """Yield deterministic chunks while observing cancellation between every chunk."""
 
-    for index, word in enumerate((f"Placeholder reply: {source_content}").split(" ")):
+    content_to_generate = await reply_text(session, reply, source_content)
+    for index, word in enumerate(content_to_generate.split(" ")):
         await asyncio.sleep(0.05)
         chunk = (" " if index else "") + word
         content = await session.scalar(

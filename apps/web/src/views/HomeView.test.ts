@@ -6,6 +6,7 @@ import HomeView from './HomeView.vue'
 const api = vi.hoisted(() => ({
   createConversation: vi.fn(), getConversation: vi.fn(), listConversations: vi.fn(),
   regenerateMessage: vi.fn(), stopMessage: vi.fn(), streamMessage: vi.fn(),
+  submitFeedback: vi.fn(),
   replace: vi.fn(), logout: vi.fn(),
 }))
 vi.mock('../conversations', () => api)
@@ -136,5 +137,41 @@ describe('reply lifecycle', () => {
     await flushPromises()
     expect(wrapper.findAll('article')[0].text()).toContain('历史版本')
     expect(wrapper.findAll('article').find((item) => item.text().includes('New'))?.text()).not.toContain('历史版本')
+  })
+
+  it('saves dislike with its reason on the displayed reply version', async () => {
+    const saved = { id: 'feedback', message_id: 'reply', rating: 'dislike', reason: 'unclear',
+      detail: 'Please explain the next step.', updated_at: conversation.updated_at }
+    const history = { ...conversation, messages: [{ ...reply, generation_status: 'completed', is_current: true }], feedback: [], contexts: [] }
+    api.getConversation.mockResolvedValue(history)
+    await wrapper.findAll('.conversation-button')[0].trigger('click')
+    await flushPromises()
+    api.submitFeedback.mockResolvedValue(saved)
+    await button('点踩').trigger('click')
+    await wrapper.get('.feedback-editor select').setValue('unclear')
+    await wrapper.get('.feedback-editor textarea').setValue(saved.detail)
+    await button('保存反馈').trigger('click')
+    await flushPromises()
+    expect(api.submitFeedback).toHaveBeenCalledWith('conversation', 'reply', 'dislike', 'unclear', saved.detail)
+    expect(wrapper.text()).toContain('已保存点踩 · 版本 1')
+    expect(button('点踩').attributes('aria-pressed')).toBe('true')
+    api.getConversation.mockResolvedValue({ ...history, feedback: [saved] })
+    await wrapper.findAll('.conversation-button')[0].trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已保存点踩 · 版本 1')
+  })
+
+  it('shows the budget and source-backed facts used by a completed reply', async () => {
+    api.getConversation.mockResolvedValue({ ...conversation,
+      messages: [{ ...reply, generation_status: 'completed', is_current: true }],
+      contexts: [{ message_id: 'reply', input_token_count: 120, total_token_budget: 4096,
+        output_token_limit: 512, selected_message_ids: ['user'], summary: {
+          facts: [{ kind: 'order', value: '42', excerpt: 'Order 42' }],
+        } }],
+    })
+    await wrapper.findAll('.conversation-button')[0].trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.context-details').text()).toContain('输入 120 Token')
+    expect(wrapper.get('.context-details').text()).toContain('Order 42')
   })
 })

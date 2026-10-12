@@ -293,6 +293,41 @@ h1 {
   margin-top: 1rem;
 }
 
+.feedback-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.feedback-row button[aria-pressed="true"] {
+  background: #d7e0ff;
+  outline: 1px solid #647de8;
+}
+
+.feedback-editor {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.feedback-editor select {
+  padding: 0.5rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+}
+
+.context-details {
+  margin-top: 0.6rem;
+  color: #596780;
+  font-size: 0.82rem;
+}
+
+.context-details summary {
+  cursor: pointer;
+}
+
 .message-form label,
 .muted {
   color: #596780;

@@ -25,6 +25,7 @@ services:
       AFTERCARE_REDIS_URL: redis://redis:6379/0
       AFTERCARE_QDRANT_URL: http://qdrant:6333
       AFTERCARE_CORS_ORIGINS: http://localhost:15173
+      AFTERCARE_CONTEXT_MAX_TURNS: 2
     ports: ["127.0.0.1:18000:8000"]
     depends_on:
       postgres:

@@ -257,7 +257,7 @@ async def test_history_backfill_and_upgrade_downgrade_upgrade(postgres, scenario
     async with factory() as session:
         assert await session.scalar(text("SELECT COUNT(*) FROM messages")) == len(original)
         assert (
-            await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261012_04"
+            await session.scalar(text("SELECT version_num FROM alembic_version")) == "20261012_05"
         )
 
 

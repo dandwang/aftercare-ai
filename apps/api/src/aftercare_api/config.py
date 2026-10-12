@@ -23,11 +23,18 @@ class Settings(BaseSettings):
     jwt_secret: str = "local-development-secret-change-before-production"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = Field(default=30, gt=0, le=1440)
+    context_token_budget: int = Field(default=4096, gt=0)
+    output_token_limit: int = Field(default=512, gt=0)
+    summary_token_limit: int = Field(default=1024, gt=0)
+    context_max_turns: int = Field(default=6, ge=0)
+    tokenizer_name: str = "cl100k_base"
 
     @model_validator(mode="after")
     def reject_insecure_production_jwt_secret(self) -> "Settings":
         """Prevent the checked-in development secret from being used in production."""
 
+        if self.output_token_limit >= self.context_token_budget:
+            raise ValueError("Output limit must leave room for input tokens")
         if self.environment == "production" and (
             self.jwt_secret == "local-development-secret-change-before-production"
             or len(self.jwt_secret) < 32
