@@ -3,12 +3,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aftercare_api.config import Settings, get_settings
 from aftercare_api.db.session import get_session
-from aftercare_api.identity.dependencies import require_current_identity
+from aftercare_api.identity.dependencies import require_current_identity, set_audit_identity
 from aftercare_api.identity.schemas import (
     AccessTokenResponse,
     CurrentUserResponse,
@@ -21,6 +21,7 @@ from aftercare_api.identity.service import (
     CurrentIdentity,
     RegistrationConflictError,
     authenticate,
+    get_current_identity,
     register_tenant_admin,
 )
 
@@ -41,6 +42,7 @@ def token_response(user_id: UUID, settings: Settings) -> AccessTokenResponse:
     responses={status.HTTP_409_CONFLICT: {"description": "Tenant or user already exists"}},
 )
 async def register_tenant_admin_endpoint(
+    request: Request,
     payload: RegisterTenantAdminRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -54,11 +56,13 @@ async def register_tenant_admin_endpoint(
             status_code=status.HTTP_409_CONFLICT,
             detail="Registration already exists",
         ) from None
+    set_audit_identity(request, session, await get_current_identity(session, user.id))
     return token_response(user.id, settings)
 
 
 @router.post("/login", response_model=AccessTokenResponse)
 async def login(
+    request: Request,
     payload: LoginRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -73,6 +77,7 @@ async def login(
             detail="Invalid email or password",
             headers={"WWW-Authenticate": "Bearer"},
         ) from None
+    set_audit_identity(request, session, await get_current_identity(session, user.id))
     return token_response(user.id, settings)
 
 

@@ -48,10 +48,14 @@ from aftercare_api.conversations.service import (
 )
 from aftercare_api.conversations.token_budget import ContextBudgetError
 from aftercare_api.db.session import get_session
-from aftercare_api.identity.dependencies import require_current_identity
+from aftercare_api.identity.dependencies import require_current_identity, require_roles
 from aftercare_api.identity.service import CurrentIdentity
 
-router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
+router = APIRouter(
+    prefix="/api/v1/conversations",
+    tags=["conversations"],
+    dependencies=[Depends(require_roles("merchant_admin", "support_agent", "customer"))],
+)
 not_found = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 logger = logging.getLogger(__name__)
 
@@ -181,12 +185,15 @@ async def reply_event_stream(
 
 @router.post("", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
 async def create_conversation_endpoint(
+    request: Request,
     identity: Annotated[CurrentIdentity, Depends(require_current_identity)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ConversationResponse:
     """Create a conversation for the authenticated user in their trusted tenant."""
 
-    return ConversationResponse.model_validate(await create_conversation(session, identity))
+    conversation = await create_conversation(session, identity)
+    request.state.audit_resource_id = conversation.id
+    return ConversationResponse.model_validate(conversation)
 
 
 @router.get("", response_model=list[ConversationResponse])

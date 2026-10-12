@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from aftercare_api.audit.middleware import AuditMiddleware
+from aftercare_api.audit.router import router as audit_router
 from aftercare_api.config import get_settings
 from aftercare_api.conversations.router import router as conversations_router
 from aftercare_api.health import router as health_router
@@ -22,6 +24,8 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Authorization", "Content-Type"],
 )
+app.add_middleware(AuditMiddleware)
 app.include_router(health_router)
 app.include_router(identity_router)
 app.include_router(conversations_router)
+app.include_router(audit_router)

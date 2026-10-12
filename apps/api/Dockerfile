@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir uv==0.11.25
 COPY pyproject.toml uv.lock alembic.ini ./
 COPY src ./src
 COPY alembic ./alembic
+COPY scripts ./scripts
 
 RUN uv sync --frozen --no-dev \
     && uv run --frozen --no-dev python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"

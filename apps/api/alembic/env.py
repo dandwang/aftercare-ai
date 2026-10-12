@@ -7,6 +7,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from aftercare_api.audit import models as audit_models  # noqa: F401
 from aftercare_api.config import get_settings
 from aftercare_api.conversations import models as conversation_models  # noqa: F401
 from aftercare_api.db.base import Base

@@ -9,7 +9,7 @@ AfterCare AI 是一个面向中小电商商家的多租户 AI 客服与工单系
 
 ## 当前状态
 
-当前处于 **M2：身份与对话** 阶段，M2-A 至 M2-E 的学习演示范围已完成，下一项是 **M2-F：角色、审计与里程碑回归**（先只读分析）。
+**M2：身份与对话** 的学习演示范围已完成，下一项是 **M3 文档与 RAG 的只读方案分析**（实施另行批准）。
 
 - 已定义用户、业务目标、范围和非范围。
 - 已定义第一版需求与验收案例。
@@ -18,7 +18,7 @@ AfterCare AI 是一个面向中小电商商家的多租户 AI 客服与工单系
 - M1 可运行骨架已完成、本地验证通过，并提交和推送到远程 `main`。
 - M2-A 已交付租户管理员注册、登录与当前用户接口；M2-B 已交付前端登录、会话状态与受保护路由。
 - M2-C 已交付持久化会话和消息；M2-D 已交付 SSE 流式回复、停止生成和可追溯的重新生成版本。
-- M2-D 加固已保存为本地提交 `4fffa74 — M2-D边界修复`；M2-E 的上下文预算、事实摘录及具体回复反馈已实现，尚未提交或推送。
+- M2-D 加固提交为 `4fffa74`；M2-E 的上下文预算、事实摘录及具体回复反馈已归入 `104c3c0`，2026-10-12 实时 GitHub API 核验远程 main 同步。M2-F 角色、最小 API 审计与正常回归已实现，改动尚未提交。
 
 ## 核心业务链路
 
@@ -161,3 +161,48 @@ docker compose -f compose.verify.yaml up --build -d --wait
 计量使用 `tiktoken 0.14.0 / cl100k_base`，计算完整 JSON 提示词（包含系统说明、摘要和包装），并保存每条回复的上下文快照。输出达到上限会被截取。摘要是明确规则的带来源事实摘录，不是通用自然语言理解；回复仍是确定性演示，没有模型账号、费用或真实订单查询。以后接入真实模型时再匹配供应商的提示词格式和用量统计。
 
 迁移 `20261012_05` 只新增上下文、摘要和反馈表，不替旧消息编造快照。回退到 `20261012_04` 会删除这些新增表及其中的元数据/反馈，保留原会话和消息；有需要保留的演示记录时先备份。
+
+## M2-F 三角色与审计演示
+
+使用已有独立项目，不能换成原长期环境：
+
+```powershell
+docker compose -f compose.verify.yaml up --build -d --wait
+docker compose -f compose.verify.yaml exec api .venv/bin/python scripts/seed_demo_accounts.py
+```
+
+初始化脚本交互输入至少 12 位演示密码及确认，不输出或保存明文密码。它只允许数据库名 `aftercare_m2d`，在一个事务中创建 `M2 Demo Store` 与以下三个账号；再次执行遇到已有租户或账号时拒绝覆盖，不重置密码或角色。
+
+| 角色 | 模拟邮箱 | 当前权限 |
+|---|---|---|
+| merchant_admin | admin@demo.example.test | 自己的会话、本租户审计 |
+| support_agent | support@demo.example.test | 自己的会话 |
+| customer | customer@demo.example.test | 自己的会话 |
+
+1. 在 `http://localhost:15173` 用顾客账号登录，按 M2-E 步骤发送订单 42、多轮话题和追问，检查来源事实、预算及反馈。
+2. 对已完成回复重新生成，确认新当前版本与旧反馈关联；发送较长消息并在生成时停止，刷新确认取消状态。
+3. 退出，再用客服或管理员登录；会话列表只显示其自己的会话，不会出现顾客会话。已知顾客会话 ID 的直接请求也返回 404。
+4. 在 `http://localhost:18000/docs` 执行 `/auth/login` 获取管理员 token，通过 Authorize 的 Bearer 输入框授权，再执行 `GET /api/v1/audit-events`。只查看模拟 token，不复制到截图、日志或仓库；若当前文档工具自动授权失败，手动使用此方法。
+5. 审计按时间倒序，默认 50 条、`limit` 最多 100，可用 `offset` 翻页。返回操作者 ID/当时角色、动作、资源 UUID、HTTP 状态、结果和 UTC 时间，没有消息或反馈原文。客服或顾客 token 调用同一接口返回 403。
+
+动作包括 `auth.register`、`auth.login`、`auth.me`、`conversation.create/list/read`、`message.send/stream/stop/regenerate`、`feedback.save`、`audit.list`。成功认证才记录可信租户与操作者；无法验证身份的匿名请求不归入任何租户。每次 SSE 请求一条，结果 `accepted` 只说明 HTTP 请求被接受；最终完成、取消与当前版本看消息状态。审计列表响应不包含本次列表请求自己的事件，它在请求结束后才写入。
+
+新增真实 HTTP 正常回归使用手动初始化的模拟账号，只允许独立 API 地址。不会重跑既有 PostgreSQL 故障/并发套件：
+
+```powershell
+Set-Location apps/api
+$env:AFTERCARE_TEST_API_URL = 'http://127.0.0.1:18000'
+$demoCredential = Read-Host 'Demo password' -AsSecureString
+$env:AFTERCARE_TEST_DEMO_PASSWORD = [System.Net.NetworkCredential]::new('', $demoCredential).Password
+try {
+    uv run pytest tests/test_m2_regression.py -s
+} finally {
+    Remove-Item Env:AFTERCARE_TEST_API_URL
+    Remove-Item Env:AFTERCARE_TEST_DEMO_PASSWORD
+    Remove-Variable demoCredential
+}
+```
+
+密码只临时传给测试进程，不打印或保存到文件。未设置上述两变量时，新回归测试跳过；普通后端共 35 个通过、23 个可选测试跳过。迁移 `20261012_06` 新增审计表；`06 → 05` 删除审计记录，保留身份、会话、消息、摘要、上下文与反馈，重新升级的审计表为空。
+
+审计采用请求结束后的独立事务，最长 3 秒取消保护；失败仅记录异常类型，不改变已完成业务。没有可靠投递、防篡改、导出或保留策略。M2 完成是当前学习演示范围的交付，不包含真实模型、RAG、Tool、工单或 CI。完成独立演示后，在项目根目录执行 `docker compose -f compose.verify.yaml down --volumes` 清理一次性资源；不要对原长期项目执行此清理。

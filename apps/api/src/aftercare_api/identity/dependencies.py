@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ credentials_exception = HTTPException(
 
 
 async def require_current_identity(
+    request: Request,
     token: Annotated[str, Depends(oauth2_scheme)],
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -32,6 +33,28 @@ async def require_current_identity(
 
     try:
         user_id = decode_access_token(token, settings)
-        return await get_current_identity(session, user_id)
+        identity = await get_current_identity(session, user_id)
+        set_audit_identity(request, session, identity)
+        return identity
     except (InvalidCredentialsError, AuthenticationFailedError):
         raise credentials_exception from None
+
+
+def set_audit_identity(request: Request, session: AsyncSession, identity: CurrentIdentity) -> None:
+    """Expose only a verified identity and database binding to the audit recorder."""
+
+    request.state.audit_identity = identity
+    request.state.audit_bind = session.bind
+
+
+def require_roles(*roles: str):
+    """Require an allowed database-backed role without widening resource ownership."""
+
+    async def check_role(
+        identity: Annotated[CurrentIdentity, Depends(require_current_identity)],
+    ) -> CurrentIdentity:
+        if identity.role not in roles:
+            raise HTTPException(status_code=403, detail="Role not permitted")
+        return identity
+
+    return check_role
